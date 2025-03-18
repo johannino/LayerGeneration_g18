@@ -1,0 +1,14 @@
+# Ignore image files
+*.png
+*.jpg
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore temporary images
+data/generated_image_*
+
+# Ignore system files
+.DS_Store
