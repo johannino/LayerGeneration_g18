@@ -1,6 +1,7 @@
 # Ignore image files
 *.png
 *.jpg
+data/generated_image_*
 
 # Ignore Python cache
 __pycache__/
@@ -12,3 +13,6 @@ data/generated_image_*
 
 # Ignore system files
 .DS_Store
+
+# Ignore random python file
+generate_images_object.py
