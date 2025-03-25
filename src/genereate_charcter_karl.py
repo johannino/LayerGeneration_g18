@@ -9,7 +9,10 @@ import os
 def create_and_save_character(character, item_class, base_path, data_folder, item_name, index):
     item = item_class(base_path)
     character.add_item(item)
-    character.save_character(os.path.join(data_folder, item_name, f"{item_name}_character_{index}.png"))
+    
+    resolution = (100,100)
+    save_path = os.path.join(data_folder, item_name, f"{item_name}_character_{index}.png")
+    character.save_character(resolution, save_path)
 
 if __name__ == "__main__":
     base_path = "../PNG"
@@ -18,7 +21,10 @@ if __name__ == "__main__":
     for i in range(10):
         character = CharacterBuilder(base_path)
         character.build_character()
-        character.save_character(os.path.join(data_folder, "base", f"base_character_{i}.png"))
+
+        resolution = (100,100)
+        save_path_base = os.path.join(data_folder, "base", f"base_character_{i}.png")
+        character.save_character(resolution, save_path_base)
 
         items = [
             (Shirts, "shirt"),

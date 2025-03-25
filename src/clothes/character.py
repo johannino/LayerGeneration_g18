@@ -65,13 +65,13 @@ class CharacterBuilder:
         for item in self.items:
             item.add_to_character(self.blank_image)
 
-    def save_character(self, filename="created_character.png"):
+    def save_character(self,resolution, filename="created_character.png"):
         
-        resize_res = (100,100)
-        resized = self.blank_image.resize(resize_res)
-        resized.save(filename)
-
-        #self.blank_image.save(filename)
+        if resolution is not None:
+            resized = self.blank_image.resize(resolution)
+            resized.save(filename)
+        else:
+            self.blank_image.save(filename)
 
     def show_character(self):
         self.blank_image.show()
