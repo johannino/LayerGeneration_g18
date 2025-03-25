@@ -33,8 +33,7 @@ class Hair:
 
         hair_path = os.path.join(self.folder_images_hair_color, self.hair)
         hair_img = Image.open(hair_path).convert('RGBA')
-        print(hair_path)
-        if "Man2" in hair_path or "Man5" in hair_path or "Man4" in hair_path or "Man3" in hair_path:
+        if "Man2" in hair_path or "Man3" in hair_path or "Man4" in hair_path  or "Man5" in hair_path:
             character_image.paste(hair_img, self.positions['man2_5'], hair_img)
         else:
             character_image.paste(hair_img, self.positions['hair'], hair_img)

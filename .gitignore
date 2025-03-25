@@ -1,7 +1,7 @@
 # Ignore image files
-#*.png
-#*.jpg
-#data/generated_image_*
+*.png
+*.jpg
+data/generated_image_*
 
 # Ignore Python cache
 __pycache__/

@@ -4,43 +4,29 @@ from clothes.shoes import Shoes
 from clothes.pants import Pants
 from clothes.hair import Hair
 from clothes.face import CompleteFace
+import os
 
-from time import sleep
-
-def genereate_random_charcter(imgs_path):
-    items = ["shirt"]
-    items_generated = [Shirts(imgs_path)]
-    return items, items_generated
+def create_and_save_character(character, item_class, base_path, data_folder, item_name, index):
+    item = item_class(base_path)
+    character.add_item(item)
+    character.save_character(os.path.join(data_folder, item_name, f"{item_name}_character_{index}.png"))
 
 if __name__ == "__main__":
-    base_path = "../PNG" 
-    figures_folder = "../figures"
+    base_path = "../PNG"
+    data_folder = "../data"
 
     for i in range(10):
         character = CharacterBuilder(base_path)
-
         character.build_character()
+        character.save_character(os.path.join(data_folder, "base", f"base_character_{i}.png"))
 
-        character.save_character("base_character.png")
+        items = [
+            (Shirts, "shirt"),
+            (Shoes, "shoe"),
+            (Pants, "pants"),
+            (Hair, "hair"),
+            (CompleteFace, "face")
+        ]
 
-        shirt = Shirts(base_path)
-        character.add_item(shirt)
-
-        character.save_character("character_with_shirt.png")
-
-        shoe = Shoes(base_path)
-        character.add_item(shoe)
-
-        pants = Pants(base_path)
-        character.add_item(pants)
-
-        hair = Hair(base_path)
-        character.add_item(hair)
-
-        face = CompleteFace(base_path)
-        character.add_item(face)
-        character.save_character("character_with_face.png")
-
-        sleep(1.5)
-
-
+        for item_class, item_name in items:
+            create_and_save_character(character, item_class, base_path, data_folder, item_name, i)
