@@ -5,6 +5,7 @@ from clothes.pants import Pants
 from clothes.hair import Hair
 from clothes.face import CompleteFace
 import os
+from tqdm import tqdm
 
 def create_and_save_character(character, item_class, base_path, data_folder, item_name, index, resolution):
     item = item_class(base_path)
@@ -17,7 +18,7 @@ if __name__ == "__main__":
     base_path = "../PNG"
     data_folder = "../data"
 
-    for i in range(10):
+    for i in tqdm(range(250), desc='Generating layers in characters'):
         character = CharacterBuilder(base_path)
         character.build_character()
 
