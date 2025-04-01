@@ -6,11 +6,10 @@ from clothes.hair import Hair
 from clothes.face import CompleteFace
 import os
 
-def create_and_save_character(character, item_class, base_path, data_folder, item_name, index):
+def create_and_save_character(character, item_class, base_path, data_folder, item_name, index, resolution):
     item = item_class(base_path)
     character.add_item(item)
     
-    resolution = (100,100)
     save_path = os.path.join(data_folder, item_name, f"{item_name}_character_{index}.png")
     character.save_character(resolution, save_path)
 
@@ -35,4 +34,4 @@ if __name__ == "__main__":
         ]
 
         for item_class, item_name in items:
-            create_and_save_character(character, item_class, base_path, data_folder, item_name, i)
+            create_and_save_character(character, item_class, base_path, data_folder, item_name, i, resolution)
