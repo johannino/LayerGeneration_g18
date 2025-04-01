@@ -16,3 +16,5 @@ data/generated_image_*
 
 # Ignore random python file
 generate_images_object.py
+
+data/
