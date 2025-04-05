@@ -3,7 +3,7 @@ import random
 from PIL import Image
 
 # Base directory for skin
-base_skin_dir = "/Users/johanverrecchia/Downloads/kenney_modular-characters/PNG/Skin"
+base_skin_dir = "PNG/Skin"
 
 # Create a new blank image (white background) with adjusted size
 background_width = 96
@@ -45,18 +45,18 @@ def generate_image():
     # Place body parts; original left parts
     parts = ['head', 'neck', 'arm', 'hand', 'leg']
     for part in parts:
-        part_path = os.path.join(skin_dir, f"{tint.lower()}_{part}.png")
+        part_path = os.path.join(skin_dir, f"{tint.lower().replace(' ', '')}_{part}.png")
         place_part(background, part_path, positions[part], scale_factor)
 
     # Place mirrored parts; only right parts are mirrored
     mirrored_parts = ['arm', 'hand', 'leg']
     for part in mirrored_parts:
-        part_path = os.path.join(skin_dir, f"{tint.lower()}_{part}.png")
+        part_path = os.path.join(skin_dir, f"{tint.lower().replace(' ', '')}_{part}.png")
         mirrored_position = positions[f"{part}_mirrored"]
         place_part(background, part_path, mirrored_position, scale_factor, mirror=True)
 
     # Save the image
-    output_path = f"/Users/johanverrecchia/Downloads/kenney_modular-characters/data/generated_image_{tint}.png"
+    output_path = f"data/generated_image_{tint}.png"
     background.save(output_path)
 
 # Generate a set number of images
