@@ -168,7 +168,10 @@ if __name__ == "__main__":
     # Also, we are starting from shirt layer and not base (need to check datalaoder)
     data_folder = "../data/"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True, pin_memory=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print(f"Number of batches: {len(dataloader)}")
 
     # 2. Instantiate the multi-layer predictor.
     # We'll use the same configuration for both predictor modules.
@@ -179,7 +182,8 @@ if __name__ == "__main__":
         embed_dim=256,
         nhead=4,
         num_layers=4
-    )
+    ).to(device)
+
 
     # 3. Define loss and optimizer.
     # We use MSE loss plus an L1 penalty on the residuals to encourage minimal changes.
@@ -187,7 +191,6 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
     residual_reg_weight = 0.1  # Weight for residual regularization.
-
     # 4. Training loop.
     # We assume the dataset provides a tensor of shape [batch, num_layers, 3, 100, 100].
     # For multi-layer prediction, we use:
@@ -201,6 +204,7 @@ if __name__ == "__main__":
         for batch in dataloader:
             # layer_tensor shape: [batch_size, 5, 3, 100, 100] (if 5 layers per character)
             layer_tensor, _ = batch
+            layer_tensor = layer_tensor.to(device)
             layer1 = layer_tensor[:, 0]   # Base layer.
             gt_layer2 = layer_tensor[:, 1]  # Ground truth layer2.
             gt_layer3 = layer_tensor[:, 2]  # Ground truth layer3.
@@ -219,23 +223,14 @@ if __name__ == "__main__":
                 teacher_forcing=True
                 )
             
-            # Loss for predictor2.
             loss_layer2 = criterion(pred_layer2, gt_layer2)
-            residual_layer2 = pred_layer2 - layer1
-            loss_res2 = torch.mean(torch.abs(residual_layer2))
-            
-            # Loss for predictor3.
+            loss_res2 = torch.mean(torch.abs(pred_layer2 - layer1))
             loss_layer3 = criterion(pred_layer3, gt_layer3)
-            residual_layer3 = pred_layer3 - gt_layer2  # Since predictor3 adds residual over layer2.
-            loss_res3 = torch.mean(torch.abs(residual_layer3))
-
+            loss_res3 = torch.mean(torch.abs(pred_layer3 - gt_layer2))
             loss_layer4 = criterion(pred_layer4, gt_layer4)
-            residual_layer4 = pred_layer4 - gt_layer3
-            loss_res4 = torch.mean(torch.abs(residual_layer4))
-
+            loss_res4 = torch.mean(torch.abs(pred_layer4 - gt_layer3))
             loss_layer5 = criterion(pred_layer5, gt_layer5)
             loss_res5 = torch.mean(torch.abs(pred_layer5 - gt_layer4))
-
             loss_layer6 = criterion(pred_layer6, gt_layer6)
             loss_res6 = torch.mean(torch.abs(pred_layer6 - gt_layer5))
             
@@ -261,6 +256,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         for batch in dataloader:
             layer_tensor, _ = batch
+            layer_tensor = layer_tensor.to(device)
             layer1 = layer_tensor[:, 0]
             gt_layer2 = layer_tensor[:, 1]
             gt_layer3 = layer_tensor[:, 2]
