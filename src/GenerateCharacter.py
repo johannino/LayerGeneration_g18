@@ -18,7 +18,7 @@ if __name__ == "__main__":
     base_path = "../PNG"
     data_folder = "../data"
 
-    for i in tqdm(range(250), desc='Generating layers in characters'):
+    for i in tqdm(range(2500), desc='Generating layers in characters'):
         character = CharacterBuilder(base_path)
         character.build_character()
 
