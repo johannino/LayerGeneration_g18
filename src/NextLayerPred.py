@@ -4,8 +4,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from Model.CharacterLoader import CharacterLayerLoader
 import matplotlib.pyplot as plt
-import math
-
 # ---------------------------
 # Vision Transformer for Residual Regression
 # ---------------------------
@@ -135,17 +133,31 @@ class MultiLayerPredictor(nn.Module):
         super().__init__()
         self.predictor2 = VisionTransformerForRegression(**kwargs)
         self.predictor3 = VisionTransformerForRegression(**kwargs)
+        self.predictor4 = VisionTransformerForRegression(**kwargs)
+        self.predictor5 = VisionTransformerForRegression(**kwargs)
+        self.predictor6 = VisionTransformerForRegression(**kwargs)
     
-    def forward(self, layer1, gt_layer2=None, teacher_forcing=True):
+    def forward(self, layer1, gt_layer2=None, gt_layer3=None, gt_layer4=None, gt_layer5=None,teacher_forcing=True):
         # Predict layer2 from layer1.
         pred_layer2 = self.predictor2(layer1)
         # For predictor3, use teacher forcing if available.
-        if teacher_forcing and gt_layer2 is not None:
-            input_for_layer3 = gt_layer2
-        else:
-            input_for_layer3 = pred_layer2
+        # Predict layer3 using either ground truth or predicted layer2
+        input_for_layer3 = gt_layer2 if teacher_forcing and gt_layer2 is not None else pred_layer2
         pred_layer3 = self.predictor3(input_for_layer3)
-        return pred_layer2, pred_layer3
+
+        # Predict layer4 using either ground truth or predicted layer3
+        input_for_layer4 = gt_layer3 if teacher_forcing and gt_layer3 is not None else pred_layer3
+        pred_layer4 = self.predictor4(input_for_layer4)
+
+        # Predict layer 5
+        input_for_layer5 = gt_layer4 if teacher_forcing and gt_layer4 is not None else pred_layer4
+        pred_layer5 = self.predictor5(input_for_layer5)
+        
+        # Predict layer 5
+        input_for_layer6 = gt_layer5 if teacher_forcing and gt_layer5 is not None else pred_layer5
+        pred_layer6 = self.predictor6(input_for_layer6)
+
+        return pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6
 
 # ---------------------------
 # Driver Code
@@ -156,7 +168,7 @@ if __name__ == "__main__":
     # Also, we are starting from shirt layer and not base (need to check datalaoder)
     data_folder = "../data/"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
-    dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     # 2. Instantiate the multi-layer predictor.
     # We'll use the same configuration for both predictor modules.
@@ -182,7 +194,7 @@ if __name__ == "__main__":
     #   - layer1 as input,
     #   - layer2 as the target for predictor2,
     #   - layer3 as the target for predictor3.
-    num_epochs = 100
+    num_epochs = 10
     model.train()
     for epoch in range(num_epochs):
         running_loss = 0.0
@@ -192,10 +204,20 @@ if __name__ == "__main__":
             layer1 = layer_tensor[:, 0]   # Base layer.
             gt_layer2 = layer_tensor[:, 1]  # Ground truth layer2.
             gt_layer3 = layer_tensor[:, 2]  # Ground truth layer3.
+            gt_layer4 = layer_tensor[:, 3]  # Ground truth layer4
+            gt_layer5 = layer_tensor[:, 4]  # Ground truth layer5
+            gt_layer6 = layer_tensor[:, 5]  # Ground truth layer6
             
             optimizer.zero_grad()
             # Use teacher forcing for the second stage.
-            pred_layer2, pred_layer3 = model(layer1, gt_layer2=gt_layer2, teacher_forcing=True)
+            pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = model(
+                layer1=layer1, 
+                gt_layer2=gt_layer2,
+                gt_layer3=gt_layer3,
+                gt_layer4=gt_layer4, 
+                gt_layer5=gt_layer5,
+                teacher_forcing=True
+                )
             
             # Loss for predictor2.
             loss_layer2 = criterion(pred_layer2, gt_layer2)
@@ -206,8 +228,25 @@ if __name__ == "__main__":
             loss_layer3 = criterion(pred_layer3, gt_layer3)
             residual_layer3 = pred_layer3 - gt_layer2  # Since predictor3 adds residual over layer2.
             loss_res3 = torch.mean(torch.abs(residual_layer3))
+
+            loss_layer4 = criterion(pred_layer4, gt_layer4)
+            residual_layer4 = pred_layer4 - gt_layer3
+            loss_res4 = torch.mean(torch.abs(residual_layer4))
+
+            loss_layer5 = criterion(pred_layer5, gt_layer5)
+            loss_res5 = torch.mean(torch.abs(pred_layer5 - gt_layer4))
+
+            loss_layer6 = criterion(pred_layer6, gt_layer6)
+            loss_res6 = torch.mean(torch.abs(pred_layer6 - gt_layer5))
             
-            loss = loss_layer2 + residual_reg_weight * loss_res2 + loss_layer3 + residual_reg_weight * loss_res3
+            loss = (
+                loss_layer2 + residual_reg_weight * loss_res2 +
+                loss_layer3 + residual_reg_weight * loss_res3 +
+                loss_layer4 + residual_reg_weight * loss_res4 +
+                loss_layer5 + residual_reg_weight * loss_res5 + 
+                loss_layer6 + residual_reg_weight * loss_res6
+            )
+
             loss.backward()
             optimizer.step()
             
@@ -225,36 +264,72 @@ if __name__ == "__main__":
             layer1 = layer_tensor[:, 0]
             gt_layer2 = layer_tensor[:, 1]
             gt_layer3 = layer_tensor[:, 2]
+            gt_layer4 = layer_tensor[:, 3]
+            gt_layer5 = layer_tensor[:, 4]
+            gt_layer6 = layer_tensor[:, 5]
             
             # During evaluation, you can use teacher forcing or sequential prediction.
             # Here, we use teacher forcing for predictor3.
-            pred_layer2, pred_layer3 = model(layer1, gt_layer2=gt_layer2, teacher_forcing=True)
+            pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = model(
+                layer1=layer1, 
+                gt_layer2=gt_layer2, 
+                gt_layer3=gt_layer3,
+                gt_layer4=gt_layer4,
+                gt_layer5=gt_layer5,
+                teacher_forcing=True)
             
-            # Display and save the first example.
-            input_img = layer1[0].permute(1, 2, 0).cpu().numpy()
-            pred_img2 = pred_layer2[0].permute(1, 2, 0).cpu().numpy()
-            gt_img2 = gt_layer2[0].permute(1, 2, 0).cpu().numpy()
-            pred_img3 = pred_layer3[0].permute(1, 2, 0).cpu().numpy()
-            gt_img3 = gt_layer3[0].permute(1, 2, 0).cpu().numpy()
+            def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
             
-            fig, axes = plt.subplots(2, 3, figsize=(14, 8))
-            axes[0, 0].imshow(input_img)
+            fig, axes = plt.subplots(2, 6, figsize=(14, 8))
+            axes[0, 0].imshow(to_np(layer1))
             axes[0, 0].set_title("Input Layer (Layer 1)")
             axes[0, 0].axis("off")
-            axes[0, 1].imshow(pred_img2)
-            axes[0, 1].set_title("Predicted Layer 2")
+
+            axes[1 ,0].axis("off")
+
+            axes[0, 1].imshow(to_np(gt_layer2))
+            axes[0, 1].set_title("Ground Truth Layer 2")
             axes[0, 1].axis("off")
-            axes[0, 2].imshow(gt_img2)
-            axes[0, 2].set_title("Ground Truth Layer 2")
-            axes[0, 2].axis("off")
-            axes[1, 0].axis("off")  # Empty
-            axes[1, 1].imshow(pred_img3)
-            axes[1, 1].set_title("Predicted Layer 3")
+
+            axes[1, 1].imshow(to_np(pred_layer2))
+            axes[1, 1].set_title("Predicted Layer 2")
             axes[1, 1].axis("off")
-            axes[1, 2].imshow(gt_img3)
-            axes[1, 2].set_title("Ground Truth Layer 3")
+
+            axes[0, 2].imshow(to_np(gt_layer3))
+            axes[0, 2].set_title("Ground Truth Layer 3")
+            axes[0, 2].axis("off")
+
+            axes[1, 2].imshow(to_np(pred_layer3))
+            axes[1, 2].set_title("Predicted Layer 3")
             axes[1, 2].axis("off")
+            
+            axes[0, 3].imshow(to_np(gt_layer4))
+            axes[0, 3].set_title("Ground Truth Layer 4")
+            axes[0, 3].axis("off")
+
+            axes[1, 3].imshow(to_np(pred_layer4))
+            axes[1, 3].set_title("Predicted Layer 4")
+            axes[1, 3].axis("off")
+
+            axes[0, 4].imshow(to_np(gt_layer5))
+            axes[0, 4].set_title("Ground Truth Layer 5")
+            axes[0, 4].axis("off")
+
+            axes[1, 4].imshow(to_np(pred_layer5))
+            axes[1, 4].set_title("Predicted Layer 5")
+            axes[1, 4].axis("off")
+
+            axes[0, 5].imshow(to_np(gt_layer6))
+            axes[0, 5].set_title("Ground Truth Layer 6")
+            axes[0, 5].axis("off")
+
+            axes[1, 5].imshow(to_np(pred_layer6))
+            axes[1, 5].set_title("Predicted Layer 6")
+            axes[1, 5].axis("off")
+
+            axes[1 ,0].axis("off")
+
             plt.tight_layout()
-            plt.savefig("predictions_multilayer.png")
+            plt.savefig("../figures/predictions_multilayer.png")
             plt.show()
             break  # Only evaluate one batch

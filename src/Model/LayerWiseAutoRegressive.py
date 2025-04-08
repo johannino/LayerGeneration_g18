@@ -22,7 +22,7 @@ if __name__ == "__main__":
     data_folder = "../../data"
     dataset = CharacterLayerLoader(data_folder)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-    # Size of Batch: [32, 5, 3, 100, 100] -> [batch_size, num_layers, rgb, resolution, resolution]
+    # Size of Batch: [32, 6, 3, 100, 100] -> [batch_size, num_layers, rgb, resolution, resolution]
 
     model = LayerWiseARModel().to(device)
     #train(model, dataloader)

@@ -29,7 +29,7 @@ class CharacterLayerLoader(Dataset):
         base_path = os.path.join(self.data_folder, "base", f"base_character_{char_id}.png")
         full_image = self.transform(Image.open(base_path).convert("RGB"))
         
-        layers = []
+        layers = [full_image]
         layer_names = ["shirt", "shoe", "pants", "hair", "face"]
         
         for layer in layer_names:
