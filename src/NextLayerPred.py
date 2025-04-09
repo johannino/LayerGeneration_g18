@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from Model.CharacterLoader import CharacterLayerLoader
+from Discriminator import Discriminator
 import matplotlib.pyplot as plt
 # ---------------------------
 # Vision Transformer for Residual Regression
@@ -46,6 +47,7 @@ class VisionTransformerForRegression(nn.Module):
             nhead=nhead,
             dim_feedforward=embed_dim * 4,
             dropout=0.1,
+            batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -168,7 +170,7 @@ if __name__ == "__main__":
     # Also, we are starting from shirt layer and not base (need to check datalaoder)
     data_folder = "../data/"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=16, shuffle=True, pin_memory=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Number of batches: {len(dataloader)}")
@@ -184,10 +186,14 @@ if __name__ == "__main__":
         num_layers=4
     ).to(device)
 
+    # Discriminator (only for final predicted layer for now)
+    discriminator = Discriminator(in_channels=3).to(device)
+    bce_loss = nn.BCEWithLogitsLoss()
+    d_optimizer = optim.Adam(discriminator.parameters(), lr=1e-4)
 
     # 3. Define loss and optimizer.
     # We use MSE loss plus an L1 penalty on the residuals to encourage minimal changes.
-    criterion = nn.MSELoss()
+    mse_loss = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
     residual_reg_weight = 0.1  # Weight for residual regularization.
@@ -197,8 +203,10 @@ if __name__ == "__main__":
     #   - layer1 as input,
     #   - layer2 as the target for predictor2,
     #   - layer3 as the target for predictor3.
-    num_epochs = 10
+    num_epochs = 15
     model.train()
+    discriminator.train()
+    torch.autograd.set_detect_anomaly(True)
     for epoch in range(num_epochs):
         running_loss = 0.0
         for batch in dataloader:
@@ -212,7 +220,6 @@ if __name__ == "__main__":
             gt_layer5 = layer_tensor[:, 4]  # Ground truth layer5
             gt_layer6 = layer_tensor[:, 5]  # Ground truth layer6
             
-            optimizer.zero_grad()
             # Use teacher forcing for the second stage.
             pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = model(
                 layer1=layer1, 
@@ -223,17 +230,29 @@ if __name__ == "__main__":
                 teacher_forcing=True
                 )
             
-            loss_layer2 = criterion(pred_layer2, gt_layer2)
+            # Train discriminator
+            d_real = discriminator(gt_layer6)
+            d_fake = discriminator(pred_layer6.detach())
+            d_loss_real = bce_loss(d_real, torch.ones_like(d_real).to(device))
+            d_loss_fake = bce_loss(d_fake, torch.zeros_like(d_fake).to(device))
+            d_loss = (d_loss_real + d_loss_fake) * 0.5
+
+            d_optimizer.zero_grad()
+            d_loss.backward()
+            d_optimizer.step()
+
+            # Train generator
+            loss_layer2 = mse_loss(pred_layer2, gt_layer2)
             loss_res2 = torch.mean(torch.abs(pred_layer2 - layer1))
-            loss_layer3 = criterion(pred_layer3, gt_layer3)
+            loss_layer3 = mse_loss(pred_layer3, gt_layer3)
             loss_res3 = torch.mean(torch.abs(pred_layer3 - gt_layer2))
-            loss_layer4 = criterion(pred_layer4, gt_layer4)
+            loss_layer4 = mse_loss(pred_layer4, gt_layer4)
             loss_res4 = torch.mean(torch.abs(pred_layer4 - gt_layer3))
-            loss_layer5 = criterion(pred_layer5, gt_layer5)
+            loss_layer5 = mse_loss(pred_layer5, gt_layer5)
             loss_res5 = torch.mean(torch.abs(pred_layer5 - gt_layer4))
-            loss_layer6 = criterion(pred_layer6, gt_layer6)
+            loss_layer6 = mse_loss(pred_layer6, gt_layer6)
             loss_res6 = torch.mean(torch.abs(pred_layer6 - gt_layer5))
-            
+
             loss = (
                 loss_layer2 + residual_reg_weight * loss_res2 +
                 loss_layer3 + residual_reg_weight * loss_res3 +
@@ -242,13 +261,16 @@ if __name__ == "__main__":
                 loss_layer6 + residual_reg_weight * loss_res6
             )
 
+            model_adv_loss = bce_loss(discriminator(pred_layer6), torch.ones_like(d_real).to(device)) * 0.1
+            loss = loss + model_adv_loss
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
             running_loss += loss.item()
-        
+
         avg_loss = running_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{num_epochs}] - Loss: {avg_loss:.4f}")
+        print(f"Epoch [{epoch+1}/{num_epochs}] - Generator Loss: {avg_loss:.4f} - Discriminator Loss: {d_loss.item():.4f}")
         scheduler.step()
 
     # 5. Evaluation and save predictions.
@@ -272,7 +294,7 @@ if __name__ == "__main__":
                 gt_layer3=gt_layer3,
                 gt_layer4=gt_layer4,
                 gt_layer5=gt_layer5,
-                teacher_forcing=True)
+                teacher_forcing=False)
             
             def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
             

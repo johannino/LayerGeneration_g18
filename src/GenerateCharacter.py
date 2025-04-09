@@ -10,6 +10,9 @@ from tqdm import tqdm
 def create_and_save_character(character, item_class, base_path, data_folder, item_name, index, resolution):
     item = item_class(base_path)
     character.add_item(item)
+
+    item_folder = os.path.join(data_folder, item_name)
+    os.makedirs(item_folder, exist_ok=True)
     
     save_path = os.path.join(data_folder, item_name, f"{item_name}_character_{index}.png")
     character.save_character(resolution, save_path)
@@ -17,8 +20,13 @@ def create_and_save_character(character, item_class, base_path, data_folder, ite
 if __name__ == "__main__":
     base_path = "../PNG"
     data_folder = "../data"
+    
+    os.makedirs(data_folder, exist_ok=True)
 
-    for i in tqdm(range(2500), desc='Generating layers in characters'):
+    base_folder = os.path.join(data_folder, "base")
+    os.makedirs(base_folder, exist_ok=True)
+
+    for i in tqdm(range(100), desc='Generating layers in characters'):
         character = CharacterBuilder(base_path)
         character.build_character()
 
