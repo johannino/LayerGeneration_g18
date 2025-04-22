@@ -17,4 +17,8 @@ data/generated_image_*
 # Ignore random python file
 generate_images_object.py
 
+# Ignore all .err and .out files
+*.err
+*.out
+
 data/
