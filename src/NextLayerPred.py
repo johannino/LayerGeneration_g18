@@ -4,6 +4,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from Model.CharacterLoader import CharacterLayerLoader
 import matplotlib.pyplot as plt
+from Discriminator import LayerDiscriminator
+from Loss_functions import color_histogram_loss
+
 # ---------------------------
 # Vision Transformer for Residual Regression
 # ---------------------------
@@ -20,7 +23,7 @@ class VisionTransformerForRegression(nn.Module):
         in_channels=3,
         embed_dim=256,
         nhead=4,
-        num_layers=4, # Number of Transformer encoder layers
+        num_layers=5, # Number of Transformer encoder layers
     ):
         super().__init__()
 
@@ -166,9 +169,10 @@ if __name__ == "__main__":
     # 1. Create the dataset and dataloader.
     # Note: Maybe we can normalize images in CharacterLayerLoader.
     # Also, we are starting from shirt layer and not base (need to check datalaoder)
+    batch_size = 32
     data_folder = "../data/"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Number of batches: {len(dataloader)}")
@@ -184,72 +188,148 @@ if __name__ == "__main__":
         num_layers=4
     ).to(device)
 
+    discriminator = LayerDiscriminator(
+        image_size=100,
+        in_channels=3
+    ).to(device)
 
     # 3. Define loss and optimizer.
     # We use MSE loss plus an L1 penalty on the residuals to encourage minimal changes.
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+    criterion_mse = nn.MSELoss()
+    criterion_l1 = nn.L1Loss()
+    criterion_bce = nn.BCELoss()
+    criterion_layer = nn.CrossEntropyLoss()
+
+    lambda_adv = 1.0      # Adversarial loss weight
+    lambda_rec = 10.0     # Reconstruction loss weight
+    lambda_fm = 10.0      # Feature matching loss weight
+    lambda_layer = 2.0    # Layer classification loss weight
+
+    optimizer_G= optim.Adam(model.parameters(), lr=1e-4)
+    optimizer_D = optim.Adam(discriminator.parameters(), lr=1e-4)
+    scheduler_G = optim.lr_scheduler.CosineAnnealingLR(optimizer_G, T_max=200)
     residual_reg_weight = 0.1  # Weight for residual regularization.
+    adversarial_weight = 0.5
+
+    real_label, fake_label = 1.0, 0.0
     # 4. Training loop.
     # We assume the dataset provides a tensor of shape [batch, num_layers, 3, 100, 100].
     # For multi-layer prediction, we use:
     #   - layer1 as input,
     #   - layer2 as the target for predictor2,
     #   - layer3 as the target for predictor3.
-    num_epochs = 10
+    num_epochs = 75
     model.train()
+    discriminator.train()
+
     for epoch in range(num_epochs):
-        running_loss = 0.0
+        running_g_loss = 0.0
+        running_d_loss = 0.0
         for batch in dataloader:
             # layer_tensor shape: [batch_size, 5, 3, 100, 100] (if 5 layers per character)
             layer_tensor, _ = batch
             layer_tensor = layer_tensor.to(device)
             layer1 = layer_tensor[:, 0]   # Base layer.
-            gt_layer2 = layer_tensor[:, 1]  # Ground truth layer2.
-            gt_layer3 = layer_tensor[:, 2]  # Ground truth layer3.
-            gt_layer4 = layer_tensor[:, 3]  # Ground truth layer4
-            gt_layer5 = layer_tensor[:, 4]  # Ground truth layer5
-            gt_layer6 = layer_tensor[:, 5]  # Ground truth layer6
+
+            gt_layers = [layer_tensor[:, i] for i in range(1, 6)]  # Layers 2-6
+
+            real_target = torch.full((batch_size, 1, 3, 3), real_label, device=device)
+            fake_target = torch.full((batch_size, 1, 3, 3), fake_label, device=device)
+            layer_labels = [torch.full((batch_size,), i, dtype=torch.long, device=device) for i in range(5)]
+
+            # 4.1 Train the discriminator.
+            d_real_loss = 0
+            d_layer_loss_real = 0
+            optimizer_D.zero_grad()
             
-            optimizer.zero_grad()
-            # Use teacher forcing for the second stage.
-            pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = model(
+            pred_layers = model(
                 layer1=layer1, 
-                gt_layer2=gt_layer2,
-                gt_layer3=gt_layer3,
-                gt_layer4=gt_layer4, 
-                gt_layer5=gt_layer5,
+                gt_layer2=layer_tensor[:, 1],
+                gt_layer3=layer_tensor[:, 2],
+                gt_layer4=layer_tensor[:, 3], 
+                gt_layer5=layer_tensor[:, 4],
+                teacher_forcing=True)
+
+            d_real_loss = 0
+            d_layer_loss_real = 0
+
+            # Train with real samples
+            for i, (gt_layer, layer_label) in enumerate(zip(gt_layers, layer_labels)):
+                condition = layer1 if i == 0 else gt_layers[i-1]
+                
+                real_validity, real_layer_pred, _ = discriminator(gt_layer, condition)
+                d_real_loss += criterion_bce(real_validity, real_target)
+                d_layer_loss_real += criterion_layer(real_layer_pred.view(batch_size, -1), layer_label)
+            
+            # Train with fake samples
+            d_fake_loss = 0
+            for i, pred_layer in enumerate(pred_layers):
+                condition = layer1 if i == 0 else gt_layers[i-1]
+                fake_validity, _, _ = discriminator(pred_layer.detach(), condition)
+                d_fake_loss += criterion_bce(fake_validity, fake_target)
+            
+            # Total discriminator loss
+            d_loss = (d_real_loss + d_fake_loss) / len(gt_layers) + d_layer_loss_real / len(gt_layers)
+            d_loss.backward()
+            optimizer_D.step()
+
+            # 4.2 Train the generator.
+            optimizer_G.zero_grad()
+            # Use teacher forcing for the second stage.
+            pred_layers= model(
+                layer1=layer1, 
+                gt_layer2=layer_tensor[:, 1],
+                gt_layer3=layer_tensor[:, 2],
+                gt_layer4=layer_tensor[:, 3], 
+                gt_layer5=layer_tensor[:, 4],
                 teacher_forcing=True
                 )
             
-            loss_layer2 = criterion(pred_layer2, gt_layer2)
-            loss_res2 = torch.mean(torch.abs(pred_layer2 - layer1))
-            loss_layer3 = criterion(pred_layer3, gt_layer3)
-            loss_res3 = torch.mean(torch.abs(pred_layer3 - gt_layer2))
-            loss_layer4 = criterion(pred_layer4, gt_layer4)
-            loss_res4 = torch.mean(torch.abs(pred_layer4 - gt_layer3))
-            loss_layer5 = criterion(pred_layer5, gt_layer5)
-            loss_res5 = torch.mean(torch.abs(pred_layer5 - gt_layer4))
-            loss_layer6 = criterion(pred_layer6, gt_layer6)
-            loss_res6 = torch.mean(torch.abs(pred_layer6 - gt_layer5))
+            g_loss = 0
+            fm_loss = 0
+            g_rec_loss = 0
+            g_layer_loss = 0
             
-            loss = (
-                loss_layer2 + residual_reg_weight * loss_res2 +
-                loss_layer3 + residual_reg_weight * loss_res3 +
-                loss_layer4 + residual_reg_weight * loss_res4 +
-                loss_layer5 + residual_reg_weight * loss_res5 + 
-                loss_layer6 + residual_reg_weight * loss_res6
-            )
+            for i, (pred_layer, gt_layer, layer_label) in enumerate(zip(pred_layers, gt_layers, layer_labels)):
+                condition = layer1 if i == 0 else gt_layers[i-1]
+                
+                # Adversarial loss
+                fake_validity, fake_layer_pred, fake_features = discriminator(pred_layer, condition)
+                g_adversarial = criterion_bce(fake_validity, real_target)
+                
+                # Layer classification loss (generator should produce layers that match expected layer type)
+                g_layer_loss += criterion_layer(fake_layer_pred.view(batch_size, -1), layer_label)
+                
+                # Feature matching loss
+                _, _, real_features = discriminator(gt_layer, condition)
+                fm_loss += criterion_l1(fake_features, real_features.detach())
+                
+                # Reconstruction loss
+                g_rec_loss += criterion_mse(pred_layer, gt_layer)
 
-            loss.backward()
-            optimizer.step()
+                # color_histogram_loss
+                g_rec_loss += color_histogram_loss(pred_layer, gt_layer)
+                
+                # Add L1 loss to enforce sparsity
+                prev_layer = layer1 if i == 0 else gt_layers[i-1]
+                g_rec_loss += 0.1 * criterion_l1(pred_layer - prev_layer, torch.zeros_like(pred_layer))
+                
+            # Combine all losses
+            g_loss = (lambda_adv * g_adversarial + 
+                      lambda_rec * g_rec_loss / len(gt_layers) + 
+                      lambda_fm * fm_loss / len(gt_layers) +
+                      lambda_layer * g_layer_loss / len(gt_layers))
             
-            running_loss += loss.item()
+            g_loss.backward()
+            optimizer_G.step()
+            
+            running_g_loss += g_loss.item()
+            running_d_loss += d_loss.item()
         
-        avg_loss = running_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{num_epochs}] - Loss: {avg_loss:.4f}")
-        scheduler.step()
+        avg_g_loss = running_g_loss / len(dataloader)
+        avg_d_loss = running_d_loss / len(dataloader)
+        print(f"Epoch [{epoch+1}/{num_epochs}] - G Loss: {avg_g_loss:.4f}, D Loss: {avg_d_loss:.4f}")
+        scheduler_G.step()
 
     # 5. Evaluation and save predictions.
     model.eval()
@@ -272,7 +352,7 @@ if __name__ == "__main__":
                 gt_layer3=gt_layer3,
                 gt_layer4=gt_layer4,
                 gt_layer5=gt_layer5,
-                teacher_forcing=True)
+                teacher_forcing=False)
             
             def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
             
