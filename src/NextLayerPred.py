@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from Model.CharacterLoader import CharacterLayerLoader
+from CharacterLoader import CharacterLayerLoader
 import matplotlib.pyplot as plt
 from Discriminator import LayerDiscriminator
 from Loss_functions import color_histogram_loss
