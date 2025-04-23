@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import os
 import torch
 
+from clothes.character import CharacterBuilder
 from clothes.shirt_arm import Shirts
 from clothes.shoes import Shoes
 from clothes.pants import Pants
@@ -16,15 +17,19 @@ import shutil
 
 def create_and_save_character(item_class, base_path, data_folder, item_name, index, resolution):
     
-    item = item_class(base_path)
-    character_image = Image.new('RGBA', (item.width, item.height), (255, 255, 255, 0))
-    item.add_to_character(character_image)
-    resized_image = character_image.resize((100, 100), Image.Resampling.LANCZOS)
-
     item_folder = os.path.join(data_folder, item_name)
     os.makedirs(item_folder, exist_ok=True)
+    item = item_class(base_path)
 
-    resized_image.save(os.path.join(item_folder, f"{item_name}_{index}.png"))
+    if item_name == 'character':
+        item.build_character()
+        item.save_character(resolution=resolution, filename=os.path.join(data_folder, item_name, f"{item_name}_{index}.png"))
+    else:
+        character_image = Image.new('RGBA', (item.width, item.height), (255, 255, 255, 0))
+        item.add_to_character(character_image)
+        resized_image = character_image.resize(resolution, Image.Resampling.LANCZOS)
+
+        resized_image.save(os.path.join(item_folder, f"{item_name}_{index}.png"))
 
 
 class DataLoaderDiffusion(Dataset):
@@ -47,7 +52,7 @@ class DataLoaderDiffusion(Dataset):
     def __getitem__(self, idx):
         char_id = self.character_ids[idx]
 
-        layers = ["shirt", "shoe", "pants", "hair", "face"]
+        layers = ["character", "shirt", "shoe", "pants", "hair", "face"]
         layer_list = []
         
         for layer in layers:
@@ -73,6 +78,7 @@ if __name__ == "__main__":
 
         resolution = (100,100)
         items = [
+            (CharacterBuilder, "character"),
             (Shirts, "shirt"),
             (Shoes, "shoe"),
             (Pants, "pants"),
