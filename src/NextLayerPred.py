@@ -218,7 +218,7 @@ if __name__ == "__main__":
     #   - layer1 as input,
     #   - layer2 as the target for predictor2,
     #   - layer3 as the target for predictor3.
-    num_epochs = 75
+    num_epochs = 25
     model.train()
     discriminator.train()
 
@@ -330,6 +330,11 @@ if __name__ == "__main__":
         avg_d_loss = running_d_loss / len(dataloader)
         print(f"Epoch [{epoch+1}/{num_epochs}] - G Loss: {avg_g_loss:.4f}, D Loss: {avg_d_loss:.4f}")
         scheduler_G.step()
+        
+        # Save model checkpoints
+        if (epoch + 1) % 5 == 0:
+            torch.save(model.state_dict(), f"../Models/vit_model.pth")
+        
 
     # 5. Evaluation and save predictions.
     model.eval()
