@@ -4,8 +4,10 @@ from fvcore.nn import FlopCountAnalysis, flop_count_table
 from NextLayerPred import MultiLayerPredictor
 from torch.utils.data import DataLoader
 from CharacterLoader import CharacterLayerLoader
+from diffusers import UNet2DConditionModel
+from tqdm import tqdm
 
-def evaluate_model(model, dataloader, num_timing_runs=100):
+def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
     """
     Evaluate a model's FLOPs and inference time.
     
@@ -32,22 +34,55 @@ def evaluate_model(model, dataloader, num_timing_runs=100):
     gt_layer4 = layer_tensor[:, 3]
     gt_layer5 = layer_tensor[:, 4]
 
-    # Calculate FLOPs using actual data
-    pred_layers = model(
-        layer1=layer1, 
-        gt_layer2=gt_layer2,
-        gt_layer3=gt_layer3,
-        gt_layer4=gt_layer4,
-        gt_layer5=gt_layer5,
-        teacher_forcing=False
-    )
+    match model_name:
+        case "ViT":
+            pred_layers = model(
+                layer1=layer1, 
+                gt_layer2=gt_layer2,
+                gt_layer3=gt_layer3,
+                gt_layer4=gt_layer4,
+                gt_layer5=gt_layer5,
+                teacher_forcing=False
+            )
+            flops = FlopCountAnalysis(model, (layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5))
+            total_flops = flops.total()
+            flops_table = flop_count_table(flops)
+        case "UNet":
+            
+            num_inference_steps = 5
+            batch_size = layer1.shape[0]
+            condition = torch.zeros((batch_size, 1, cross_attention_dim), device=device)
+            
+            # Initial input is layer1
+            current_layer = layer1
 
-    # Calculate FLOPs
-    flops = FlopCountAnalysis(model, (layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5))
-    total_flops = flops.total()
-    flops_table = flop_count_table(flops)
+            for _ in range(5):
+                pred = model(
+                    sample=current_layer,
+                    timestep=torch.zeros(batch_size, device=device, dtype=torch.long),
+                    encoder_hidden_states=condition
+                ).sample
+                current_layer = pred
 
-    # Calculate average inference time
+            dummy_sample = layer1 
+            dummy_timestep = torch.zeros(batch_size, device=device, dtype=torch.long)
+            dummy_condition = torch.zeros((batch_size, 1, cross_attention_dim), device=device)
+            
+            flops = FlopCountAnalysis(
+                model, 
+                inputs=(
+                    dummy_sample,
+                    dummy_timestep,
+                    dummy_condition
+                )
+            )
+            flops_per_step = flops.total() 
+            total_flops = flops_per_step * num_inference_steps # Multiply by the number of steps
+            flops_table = flop_count_table(flops)
+
+        case _:
+            raise ValueError(f"Unknown model name: {model_name}")
+
     with torch.no_grad():
         times = []
         for _ in range(num_timing_runs):
@@ -55,7 +90,17 @@ def evaluate_model(model, dataloader, num_timing_runs=100):
             end = torch.cuda.Event(enable_timing=True)
             
             start.record()
-            _ = model(layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5)
+            match model_name:
+                case "ViT":
+                    _ = model(layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5)
+                case "UNet":
+                    for i in range(5):
+                        pred = model(
+                            sample=layer1,
+                            timestep=torch.zeros(batch_size, device=device, dtype=torch.long),
+                            encoder_hidden_states=condition
+                        ).sample
+
             end.record()
             
             torch.cuda.synchronize()
@@ -119,5 +164,27 @@ if __name__ == "__main__":
     vit_model.load_state_dict(torch.load('../models/vit_model.pth'))
     
     # Evaluate the model
-    results = evaluate_model(vit_model, dataloader)
-    print_evaluation_results(results)
+    vit_results = evaluate_model(vit_model, dataloader, "ViT")
+    print_evaluation_results(vit_results)
+
+    print("Evaluating Unet model...")
+    cross_attention_dim = 128
+    unet_model = UNet2DConditionModel(
+        sample_size=100,
+        in_channels=3,
+        out_channels=3,
+        layers_per_block=2,
+        block_out_channels=(64, 128, 128, 256),
+        down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"),
+        up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
+        cross_attention_dim=cross_attention_dim,
+    ).to(device)
+
+    unet_model.load_state_dict(torch.load('../models/unet_model.pth'))
+    unet_results = evaluate_model(unet_model, dataloader, "UNet")
+    print_evaluation_results(unet_results)
+
+    print("\nModel Comparison:")
+    print(f"ViT vs UNet:")
+    print(f"FLOPs ratio: {vit_results['total_flops'] / unet_results['total_flops']:.2f}x")
+    print(f"Inference time ratio: {vit_results['avg_inference_time'] / unet_results['avg_inference_time']:.2f}x")

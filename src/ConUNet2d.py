@@ -52,7 +52,7 @@ residual_reg_weight = 0.1  # Weight for residual regularization.
 adversarial_weight = 0.5
 
 # --- 4. Training loop ---
-num_epochs = 50
+num_epochs = 10
 real_label, fake_label = 1.0, 0.0
 generator.train()
 discriminator.train()
@@ -141,6 +141,11 @@ for epoch in range(num_epochs):
     print(f"Epoch [{epoch+1}/{num_epochs}] - G Loss: {avg_g_loss:.4f}, D Loss: {avg_d_loss:.4f}")
 
     scheduler_G.step()
+
+    # save best model
+    if (epoch + 1) % 10 == 0:
+        torch.save(generator.state_dict(), f"../models/unet_model.pth")
+
 
 
 print("Training complete!")
