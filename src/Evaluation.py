@@ -94,12 +94,14 @@ def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
                 case "ViT":
                     _ = model(layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5)
                 case "UNet":
+                    current_layer = layer1
                     for i in range(5):
                         pred = model(
                             sample=layer1,
                             timestep=torch.zeros(batch_size, device=device, dtype=torch.long),
                             encoder_hidden_states=condition
                         ).sample
+                        current_layer = pred
 
             end.record()
             
@@ -150,7 +152,7 @@ if __name__ == "__main__":
     # Data loading
     data_folder = "../data"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True, pin_memory=True)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True)
 
     # Load and evaluate ViT model
     vit_model = MultiLayerPredictor(       
