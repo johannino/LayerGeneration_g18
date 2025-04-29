@@ -20,7 +20,7 @@ def create_and_save_character(character, item_class, base_path, data_folder, ite
 
 if __name__ == "__main__":
     base_path = "../PNG"
-    data_folder = "../data"
+    data_folder = "../data_layers"
 
     if os.path.exists(data_folder):
         shutil.rmtree(data_folder)

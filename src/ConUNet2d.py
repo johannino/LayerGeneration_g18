@@ -9,7 +9,7 @@ from Loss_functions import color_histogram_loss
 from tqdm import tqdm
 
 # --- 1. Create your dataset and dataloader ---
-dataset = CharacterLayerLoader(data_folder="../data")
+dataset = CharacterLayerLoader(data_folder="../data_layers")
 dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=3, pin_memory=True)
 
 # --- 2. Initialize the UNet2DConditionModel ---

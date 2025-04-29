@@ -43,7 +43,7 @@ class CharacterLayerLoader(Dataset):
 
 if __name__ == "__main__":
 
-    data_folder = "../../data"
+    data_folder = "../../data_layers"
     dataset = CharacterLayerLoader(data_folder)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
