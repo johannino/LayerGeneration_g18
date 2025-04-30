@@ -123,7 +123,7 @@ class VisionTransformerForRegression(nn.Module):
         return imgs
 
 # ---------------------------
-# Composite Model for Multi-Layer Prediction (3 layers for the moment)
+# Composite Model for Multi-Layer Prediction
 # ---------------------------
 class MultiLayerPredictor(nn.Module):
     """
