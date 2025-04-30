@@ -1,10 +1,12 @@
 import numpy as np
 import torch
 from fvcore.nn import FlopCountAnalysis, flop_count_table
+import torchvision.transforms.functional as TF
 from NextLayerPred import MultiLayerPredictor
 from torch.utils.data import DataLoader
 from CharacterLoader import CharacterLayerLoader
-from diffusers import UNet2DConditionModel
+from diffusers import UNet2DModel
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
@@ -47,37 +49,38 @@ def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
             flops = FlopCountAnalysis(model, (layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5))
             total_flops = flops.total()
             flops_table = flop_count_table(flops)
+
         case "UNet":
             
             num_inference_steps = 5
             batch_size = layer1.shape[0]
-            condition = torch.zeros((batch_size, 1, cross_attention_dim), device=device)
             
             # Initial input is layer1
             current_layer = layer1
+            generated_layers = [current_layer.squeeze(0).cpu()] 
 
             for _ in range(5):
-                pred = model(
+                predicted_residual = model(
                     sample=current_layer,
-                    timestep=torch.zeros(batch_size, device=device, dtype=torch.long),
-                    encoder_hidden_states=condition
+                    timestep=torch.zeros(1, device=device, dtype=torch.long),
                 ).sample
-                current_layer = pred
+                
+                next_layer = current_layer + predicted_residual
+                generated_layers.append(next_layer.squeeze(0).cpu())
+                current_layer = next_layer
 
             dummy_sample = layer1 
             dummy_timestep = torch.zeros(batch_size, device=device, dtype=torch.long)
-            dummy_condition = torch.zeros((batch_size, 1, cross_attention_dim), device=device)
             
             flops = FlopCountAnalysis(
                 model, 
                 inputs=(
                     dummy_sample,
                     dummy_timestep,
-                    dummy_condition
                 )
             )
             flops_per_step = flops.total() 
-            total_flops = flops_per_step * num_inference_steps # Multiply by the number of steps
+            total_flops = flops_per_step * num_inference_steps 
             flops_table = flop_count_table(flops)
 
         case _:
@@ -95,13 +98,12 @@ def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
                     _ = model(layer1, gt_layer2, gt_layer3, gt_layer4, gt_layer5)
                 case "UNet":
                     current_layer = layer1
-                    for i in range(5):
-                        pred = model(
+                    for _ in range(5):
+                        pred_residual = model(
                             sample=layer1,
                             timestep=torch.zeros(batch_size, device=device, dtype=torch.long),
-                            encoder_hidden_states=condition
                         ).sample
-                        current_layer = pred
+                        current_layer = pred_residual
 
             end.record()
             
@@ -144,6 +146,70 @@ def print_evaluation_results(results):
     print(f"Predictions per second: {pps:.2f}")
     print()
 
+def plot_generated_samples(model, dataloader, model_name, num_samples=5):
+    """
+    Plot generated samples from the model.
+    
+    Args:
+        model: The PyTorch model to evaluate
+        dataloader: DataLoader containing the evaluation data
+        num_samples: Number of samples to plot
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.eval()
+    
+    with torch.no_grad():
+        for i, (layer_tensor, _) in enumerate(dataloader):
+            if i >= num_samples:
+                break
+            
+            layer_tensor = layer_tensor.to(device)
+            layer1 = layer_tensor[:, 0]
+            gt_layer2 = layer_tensor[:, 1]
+            gt_layer3 = layer_tensor[:, 2]
+            gt_layer4 = layer_tensor[:, 3]
+            gt_layer5 = layer_tensor[:, 4]
+
+            match model_name:
+                case "ViT":
+                    pred_layers = model(
+                        layer1=layer1, 
+                        gt_layer2=gt_layer2,
+                        gt_layer3=gt_layer3,
+                        gt_layer4=gt_layer4,
+                        gt_layer5=gt_layer5,
+                        teacher_forcing=False
+                    )
+                    pred_layers = [layer1.squeeze(0).cpu()] + [layer.squeeze(0).cpu() for layer in pred_layers]
+                case "UNet":
+                    pred_layers = [layer1.squeeze(0).cpu()]  
+
+                    for _ in range(1, 6):
+                        current_layer = pred_layers[-1].unsqueeze(0).to(device) + torch.randn_like(current_layer) * 0.1
+                        with torch.no_grad():
+                            predicted_residual = model(
+                                sample=current_layer,
+                                timestep=torch.zeros(1, device=device, dtype=torch.long),
+                            ).sample
+                            
+                            next_layer = current_layer + predicted_residual
+                            pred_layers.append(next_layer.squeeze(0).cpu())
+                            
+                            current_layer = next_layer
+            
+            fig, axs = plt.subplots(1, 6, figsize=(15, 5))
+            fig.suptitle(f"Generated Layers", fontsize=32)
+            for k, layer in enumerate(pred_layers):
+                generated = layer.permute(1, 2, 0).clamp(0, 1)
+                if k == 0:
+                    title = "Input Layer"
+                else:
+                    title = f"Generated Layer {k}"
+                axs[k].imshow(generated)
+                axs[k].axis('off')
+                axs[k].set_title(f"{title}", fontsize=16)
+                if k == len(pred_layers) - 1:
+                    plt.savefig(f'../figures/generated_samples/{model_name}/generated_layers_{model_name}_{i+1}.png')
 
 if __name__ == "__main__":
     # Set up device
@@ -151,13 +217,13 @@ if __name__ == "__main__":
 
     # Data loading
     data_folder = "../data"
-    dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
+    dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(256, 256))
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True)
 
     # Load and evaluate ViT model
     vit_model = MultiLayerPredictor(       
-        image_size=100,
-        patch_size=10,
+        image_size=256,
+        patch_size=16,
         in_channels=3,
         embed_dim=256,
         nhead=4,
@@ -170,21 +236,23 @@ if __name__ == "__main__":
     print_evaluation_results(vit_results)
 
     print("Evaluating Unet model...")
-    cross_attention_dim = 128
-    unet_model = UNet2DConditionModel(
-        sample_size=100,
+    unet_model = UNet2DModel(
+        sample_size=256,
         in_channels=3,
         out_channels=3,
-        layers_per_block=2,
-        block_out_channels=(64, 128, 128, 256),
+        layers_per_block=1,
+        block_out_channels=(32, 64, 64, 128),
         down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"),
         up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
-        cross_attention_dim=cross_attention_dim,
     ).to(device)
 
     unet_model.load_state_dict(torch.load('../models/unet_model.pth'))
     unet_results = evaluate_model(unet_model, dataloader, "UNet")
     print_evaluation_results(unet_results)
+
+    samples = 10
+    plot_generated_samples(unet_model, dataloader, "UNet",num_samples=10)
+    plot_generated_samples(vit_model, dataloader, "ViT",num_samples=10)
 
     print("\nModel Comparison:")
     print(f"ViT vs UNet:")

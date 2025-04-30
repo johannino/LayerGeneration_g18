@@ -30,11 +30,11 @@ if __name__ == "__main__":
     base_folder = os.path.join(data_folder, "base")
     os.makedirs(base_folder, exist_ok=True)
 
-    for i in tqdm(range(512), desc='Generating layers in characters'):
+    for i in tqdm(range(1024), desc='Generating layers in characters'):
         character = CharacterBuilder(base_path)
         character.build_character()
 
-        resolution = (100,100)
+        resolution = (256,256)
         save_path_base = os.path.join(data_folder, "base", f"base_character_{i}.png")
         character.save_character(resolution, save_path_base)
 

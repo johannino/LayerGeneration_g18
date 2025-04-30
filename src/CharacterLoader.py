@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import os
 
 class CharacterLayerLoader(Dataset):
-    def __init__(self, data_folder, resolution=(100, 100)):
+    def __init__(self, data_folder, resolution=(256, 256)):
         self.data_folder = data_folder
         self.resolution = resolution
         self.character_ids = sorted([
