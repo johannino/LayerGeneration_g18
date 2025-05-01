@@ -30,7 +30,7 @@ if __name__ == "__main__":
     base_folder = os.path.join(data_folder, "base")
     os.makedirs(base_folder, exist_ok=True)
 
-    for i in tqdm(range(5000), desc='Generating layers in characters'):
+    for i in tqdm(range(1024), desc='Generating layers in characters'):
         character = CharacterBuilder(base_path)
         character.build_character()
 

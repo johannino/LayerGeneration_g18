@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from CharacterLoader import CharacterLayerLoader
 import matplotlib.pyplot as plt
 from Discriminator import LayerDiscriminator
-from Loss_functions import color_histogram_loss
+from Loss_functions import color_histogram_loss, total_variation_loss, gradient_penalty
 
 # ---------------------------
 # Vision Transformer for Residual Regression
@@ -18,7 +18,7 @@ class VisionTransformerForRegression(nn.Module):
     """
     def __init__(
         self,
-        image_size=100,
+        image_size=256,
         patch_size=10,
         in_channels=3,
         embed_dim=256,
@@ -169,10 +169,10 @@ if __name__ == "__main__":
     # 1. Create the dataset and dataloader.
     # Note: Maybe we can normalize images in CharacterLayerLoader.
     # Also, we are starting from shirt layer and not base (need to check datalaoder)
-    batch_size = 32
+    batch_size = 16
     data_folder = "../data/"
-    dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(100, 100))
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+    dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(256, 256))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=3, pin_memory=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Number of batches: {len(dataloader)}")
@@ -180,8 +180,8 @@ if __name__ == "__main__":
     # 2. Instantiate the multi-layer predictor.
     # We'll use the same configuration for both predictor modules.
     model = MultiLayerPredictor(
-        image_size=100,
-        patch_size=10,
+        image_size=256,
+        patch_size=16,
         in_channels=3,
         embed_dim=256,
         nhead=4,
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     ).to(device)
 
     discriminator = LayerDiscriminator(
-        image_size=100,
+        image_size=256,
         in_channels=3
     ).to(device)
 
@@ -204,6 +204,7 @@ if __name__ == "__main__":
     lambda_rec = 10.0     # Reconstruction loss weight
     lambda_fm = 10.0      # Feature matching loss weight
     lambda_layer = 2.0    # Layer classification loss weight
+    lambda_tv = 1        # Total variation loss weight
 
     optimizer_G= optim.Adam(model.parameters(), lr=1e-4)
     optimizer_D = optim.Adam(discriminator.parameters(), lr=1e-4)
@@ -218,7 +219,7 @@ if __name__ == "__main__":
     #   - layer1 as input,
     #   - layer2 as the target for predictor2,
     #   - layer3 as the target for predictor3.
-    num_epochs = 25
+    num_epochs = 30
     model.train()
     discriminator.train()
 
@@ -306,6 +307,7 @@ if __name__ == "__main__":
                 
                 # Reconstruction loss
                 g_rec_loss += criterion_mse(pred_layer, gt_layer)
+                g_tv_loss = total_variation_loss(pred_layer)
 
                 # color_histogram_loss
                 g_rec_loss += color_histogram_loss(pred_layer, gt_layer)
@@ -318,7 +320,8 @@ if __name__ == "__main__":
             g_loss = (lambda_adv * g_adversarial + 
                       lambda_rec * g_rec_loss / len(gt_layers) + 
                       lambda_fm * fm_loss / len(gt_layers) +
-                      lambda_layer * g_layer_loss / len(gt_layers))
+                      lambda_layer * g_layer_loss / len(gt_layers) + 
+                      lambda_tv * g_tv_loss / len(gt_layers))
             
             g_loss.backward()
             optimizer_G.step()
@@ -333,7 +336,7 @@ if __name__ == "__main__":
         
         # Save model checkpoints
         if (epoch + 1) % 5 == 0:
-            torch.save(model.state_dict(), f"../Models/vit_model.pth")
+            torch.save(model.state_dict(), f"../models/vit_model.pth")
         
 
     # 5. Evaluation and save predictions.
@@ -361,56 +364,20 @@ if __name__ == "__main__":
             
             def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
             
-            fig, axes = plt.subplots(2, 6, figsize=(14, 8))
-            axes[0, 0].imshow(to_np(layer1))
-            axes[0, 0].set_title("Input Layer (Layer 1)")
-            axes[0, 0].axis("off")
+            num_layers = 6
+            fig, axs = plt.subplots(1, num_layers, figsize=(15, 5))
 
-            axes[1 ,0].axis("off")
-
-            axes[0, 1].imshow(to_np(gt_layer2))
-            axes[0, 1].set_title("Ground Truth Layer 2")
-            axes[0, 1].axis("off")
-
-            axes[1, 1].imshow(to_np(pred_layer2))
-            axes[1, 1].set_title("Predicted Layer 2")
-            axes[1, 1].axis("off")
-
-            axes[0, 2].imshow(to_np(gt_layer3))
-            axes[0, 2].set_title("Ground Truth Layer 3")
-            axes[0, 2].axis("off")
-
-            axes[1, 2].imshow(to_np(pred_layer3))
-            axes[1, 2].set_title("Predicted Layer 3")
-            axes[1, 2].axis("off")
-            
-            axes[0, 3].imshow(to_np(gt_layer4))
-            axes[0, 3].set_title("Ground Truth Layer 4")
-            axes[0, 3].axis("off")
-
-            axes[1, 3].imshow(to_np(pred_layer4))
-            axes[1, 3].set_title("Predicted Layer 4")
-            axes[1, 3].axis("off")
-
-            axes[0, 4].imshow(to_np(gt_layer5))
-            axes[0, 4].set_title("Ground Truth Layer 5")
-            axes[0, 4].axis("off")
-
-            axes[1, 4].imshow(to_np(pred_layer5))
-            axes[1, 4].set_title("Predicted Layer 5")
-            axes[1, 4].axis("off")
-
-            axes[0, 5].imshow(to_np(gt_layer6))
-            axes[0, 5].set_title("Ground Truth Layer 6")
-            axes[0, 5].axis("off")
-
-            axes[1, 5].imshow(to_np(pred_layer6))
-            axes[1, 5].set_title("Predicted Layer 6")
-            axes[1, 5].axis("off")
-
-            axes[1 ,0].axis("off")
+            pred_layers = [pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6]
+            fig.suptitle("Generated Layers for ViT-model", fontsize=32)
+            axs[0].imshow(to_np(layer1))
+            axs[0].axis('off')
+            axs[0].set_title(f"Layer 0")
+            for i, layer in enumerate(pred_layers):
+                img = to_np(layer)
+                axs[i+1].imshow(img)
+                axs[i+1].axis('off')
+                axs[i+1].set_title(f"Layer {i+1}")
 
             plt.tight_layout()
-            plt.savefig("../figures/predictions_multilayer.png")
-            plt.show()
-            break  # Only evaluate one batch
+            plt.savefig('../figures/ViT_generated_layers.png')
+            break
