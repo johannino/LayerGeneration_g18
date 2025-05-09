@@ -2,6 +2,7 @@ import os, sys
 import argparse
 import numpy as np
 import torch
+import torch.nn as nn
 from fvcore.nn import FlopCountAnalysis, flop_count_table
 from torch.utils.data import DataLoader
 import torchvision
@@ -10,6 +11,7 @@ from tqdm import tqdm
 from NextLayerPred import MultiLayerPredictor
 from diffusers import UNet2DConditionModel
 from CharacterLoader import CharacterLayerLoader
+from MULANLoader import MulanLayerDataset
 from pytorch_fid import fid_score
 
 # Comment out the following lines if you don't have the VAR codebase
@@ -28,6 +30,7 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--sample", action="store_true", help="Whether to draw+save samples")
+    p.add_argument("--dataset", type=str, default="Character", help="Dataset to use", choices=["Character", "MULAN"])
     p.add_argument(
         "--num_samples",
         type=int,
@@ -183,7 +186,7 @@ def sample_and_save_VAR_final(
     idx = 0
     B = None
     for batch in tqdm(dataloader, desc="Sampling VAR"):
-        layers, _ = batch
+        layers = batch
         if B is None:
             B = layers.size(0)
         if idx >= num_samples:
@@ -279,6 +282,9 @@ def sample_and_save_VAR_chain(
             )
             chain_imgs = []
             for si, (logits_i, pn) in enumerate(zip(logits_list, patch_nums)):
+                if logits_i.ndim == 2:
+                    logits_i = logits_i.unsqueeze(1)  # ensure shape [B, L_i, V]
+
                 rng.manual_seed(seed + idx)
                 idxs = sample_with_top_k_top_p_(
                     logits_i, rng=rng, top_k=0, top_p=0.0, num_samples=1
@@ -337,7 +343,10 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     # build dataset (only need the final layer for FID/ref)
-    ds = CharacterLayerLoader(data_folder="../data", resolution=(100, 100))
+    if args.dataset == "MULAN":
+        ds = MulanLayerDataset(data_folder="/work3/s243345/adlcv/project/MULAN_data", resolution=(256, 256))
+    else:
+        ds = CharacterLayerLoader(data_folder="../data", resolution=(256, 256))
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, pin_memory=True)
 
     # load model
@@ -443,8 +452,37 @@ def main():
         for p in var.parameters():
             p.requires_grad_(False)
 
+        # === FLOP counting for the exact sampling call ===
+        class ARSampler(nn.Module):
+            def __init__(self, var_model):
+                super().__init__()
+                self.var = var_model
+
+            def forward(self, label_B):
+                # note: we pick fixed values for all of the other args
+                return self.var.autoregressive_infer_cfg(
+                    B=label_B.shape[0],
+                    label_B=label_B,
+                    g_seed=0,
+                    cfg=1.0, top_k=0, top_p=0.0, more_smooth=False
+                )
+
+        sampler = ARSampler(var).to(device)
+        # create a dummy batch of labels
+        dummy_labels = torch.zeros(args.batch_size, dtype=torch.long, device=device)
+        # now fvcore can see through the module hierarchy
+        flops = FlopCountAnalysis(sampler, (dummy_labels,))
+        print(f"[VAR sampler] FLOPs per call: {flops.total():,}")
+        print(flop_count_table(flops))
+
         # 2. make a dataloader (we only need the final layer to compare)
-        ds_var = CharacterLayerLoader(data_folder="../data", resolution=(256, 256))
+        if args.dataset == "MULAN":
+            data_folder = "/work3/s243345/adlcv/project/MULAN_data"
+            ds_var = MulanLayerDataset(data_folder=data_folder, resolution=(256, 256))
+        else:
+            data_folder = "../data"
+            ds_var = CharacterLayerLoader(data_folder=data_folder, resolution=(256, 256))
+        
         dl_var = DataLoader(
             ds_var, batch_size=args.batch_size, shuffle=False, pin_memory=True
         )
@@ -469,8 +507,23 @@ def main():
             args.gen_dir_last, args.gen_dir_chain,
             device, seed=0
         )
+        
+        # 3b. alternating scales ending with final
+        selected_scales = [1, 3, 5, 10, 16]
+        sample_and_save_VAR_chain(
+            vae=vae,
+            var=var,
+            patch_nums=selected_scales,
+            dataloader=dl_var,
+            num_samples=args.num_samples,
+            real_dir=args.real_dir,
+            gen_dir_last=args.gen_dir_last,
+            gen_dir_chain=args.gen_dir_chain,
+            device=device,
+            seed=0,
+        )
         """
-
+        
         # 4. compute FID
         fid = fid_score.calculate_fid_given_paths(
             [args.real_dir, args.gen_dir_last],
