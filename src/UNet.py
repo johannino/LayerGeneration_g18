@@ -1,30 +1,43 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 from torch.utils.data import DataLoader
-from diffusers import UNet2DConditionModel, UNet2DModel
+from diffusers import UNet2DModel
 from CharacterLoader import CharacterLayerLoader
+from MulanDataset import MulanLayerDataset
 from Discriminator import LayerDiscriminator
 from Loss_functions import color_histogram_loss, total_variation_loss, gradient_penalty
-from tqdm import tqdm
 
 # --- 1. Create your dataset and dataloader ---
-dataset = CharacterLayerLoader(data_folder="../data")
-dataloader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=3, pin_memory=True)
+#dataset = CharacterLayerLoader(data_folder="../data")
+dataset = MulanLayerDataset('../MULAN_data')
+dataloader = DataLoader(dataset, batch_size=8, shuffle=True, num_workers=3, pin_memory=True)
 
 # --- 2. Initialize the UNet2DConditionModel ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 generator = UNet2DModel(
-    sample_size=256,          # height and width of images (after resize)
-    in_channels=3,            # RGB input
-    out_channels=3,           # RGB output
-    layers_per_block=1,
-    block_out_channels=(32, 64, 64, 128),  
-    down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"), #  "AttnDownBlock2D",
+    sample_size=256,
+    in_channels=3,
+    out_channels=3,
+    layers_per_block=2,
+    block_out_channels= (64, 128, 256, 256),
+    down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"),
     up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
+    mid_block_type="AttnMidBlock2D",
 ).to(device)
+
+# generator = UNet2DModel(
+#     sample_size=256,          # height and width of images (after resize)
+#     in_channels=3,            # RGB input
+#     out_channels=3,           # RGB output
+#     layers_per_block=1,
+#     block_out_channels=(32, 64, 64, 128),  
+#     down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"), #  "AttnDownBlock2D",
+#     up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
+# ).to(device)
 
 discriminator = LayerDiscriminator(
         image_size=256,
@@ -50,26 +63,26 @@ residual_reg_weight = 0.1  # Weight for residual regularization.
 adversarial_weight = 0.5
 
 # --- 4. Training loop ---
-num_epochs = 30
+num_epochs = 6
 real_label, fake_label = 1.0, 0.0
 generator.train()
 discriminator.train()
+g_losses = [np.inf]
+d_losses = [np.inf]
 
 for epoch in range(num_epochs):
     
     running_g_loss = 0.0
     running_d_loss = 0.0
 
-    for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
-        all_layers, _ = batch  # (batch_size, 6, 3, 100, 100)
+    for batch in dataloader:
+        all_layers = batch  # (batch_size, 6, 3, 100, 100)
         all_layers = all_layers.to(device)
         batch_size, num_layers, channels, height, width = all_layers.shape
 
         real_target = torch.full((batch_size, 1, 3, 3), real_label, device=device)
         fake_target = torch.full((batch_size, 1, 3, 3), fake_label, device=device)
         layer_labels = [torch.full((batch_size,), i, dtype=torch.long, device=device) for i in range(5)]
-
-# ...existing code...
 
         for i in range(num_layers - 1):
             current_layer = all_layers[:, i, :, :, :]     # (batch_size, 3, H, W)
@@ -78,62 +91,58 @@ for epoch in range(num_epochs):
             # Calculate the target residual
             target_residual = next_layer - current_layer
 
-            # Train discriminator
+            # --- Train discriminator ---
             optimizer_D.zero_grad()
 
-            # Train with real samples (using actual next layer)
+            # Real samples
             real_validity, real_layer_pred, real_features = discriminator(next_layer, current_layer)
-            d_real_loss = criterion_bce(real_validity, real_target)
-            d_layer_loss_real = criterion_layer(real_layer_pred.view(batch_size, -1), layer_labels[i])
+            d_real = real_validity.mean()
 
-            # Generate residual
+            # Fake samples
             noise = torch.randn_like(current_layer) * 0.1
             noisy_input = current_layer + noise
-
-            # Generate residual instead of full layer
             predicted_residual = generator(
                 sample=noisy_input,
                 timestep=torch.zeros(batch_size, device=device, dtype=torch.long),
             ).sample
-
-            # Create fake next layer by adding residual to current layer
             fake_next_layer = current_layer + predicted_residual
 
-            # Train with fake samples
             fake_validity, _, _ = discriminator(fake_next_layer.detach(), current_layer)
-            d_fake_loss = criterion_bce(fake_validity, fake_target)
+            d_fake = fake_validity.mean()
 
-            # Total discriminator loss
-            d_loss = d_real_loss + d_fake_loss + lambda_layer * d_layer_loss_real
+            # Discriminator loss (Wasserstein)
+            d_loss = -d_real + d_fake
+
+            # Optional: add layer classification as auxiliary loss
+            d_layer_loss = criterion_layer(real_layer_pred.view(batch_size, -1), layer_labels[i])
+            d_loss += lambda_layer * d_layer_loss
+
             d_loss.backward()
             optimizer_D.step()
 
-            # Train generator
+            # --- Weight clipping step ---
+            for p in discriminator.parameters():
+                p.data.clamp_(-0.01, 0.01)
+
+            # --- Train generator ---
             optimizer_G.zero_grad()
 
-            # Generate fake samples again for generator training
+            # Forward again for generator loss
             fake_validity, fake_layer_pred, fake_features = discriminator(fake_next_layer, current_layer)
+            g_adversarial = -fake_validity.mean()  # maximize D(fake), so we minimize -D(fake)
 
-            # Calculate generator losses
-            g_adversarial = criterion_bce(fake_validity, real_target)
             g_layer_loss = criterion_layer(fake_layer_pred.view(batch_size, -1), layer_labels[i])
-            
-            # Use MSE loss on residuals instead of full layers
             g_rec_loss = criterion_mse(predicted_residual, target_residual)
             fm_loss = criterion_l1(fake_features, real_features.detach())
             tv_loss = total_variation_loss(predicted_residual)
 
-            # Add L1 loss to enforce sparsity directly on the residual
             g_rec_loss += residual_reg_weight * criterion_l1(predicted_residual, torch.zeros_like(predicted_residual))
-
-            # Add color histogram loss on the final output
             g_rec_loss += color_histogram_loss(fake_next_layer, next_layer)
 
-            # Combine all losses
             g_loss = (lambda_adv * g_adversarial + 
                     lambda_rec * g_rec_loss + 
                     lambda_fm * fm_loss +
-                    lambda_layer * g_layer_loss + 
+                    lambda_layer * g_layer_loss +
                     lambda_tv * tv_loss)
 
             g_loss.backward()
@@ -141,7 +150,7 @@ for epoch in range(num_epochs):
 
             running_g_loss += g_loss.item()
             running_d_loss += d_loss.item()
-        
+
     avg_g_loss = running_g_loss / (len(dataloader) * (num_layers - 1))
     avg_d_loss = running_d_loss / (len(dataloader) * (num_layers - 1))
     print(f"Epoch [{epoch+1}/{num_epochs}] - G Loss: {avg_g_loss:.4f}, D Loss: {avg_d_loss:.4f}")
@@ -149,8 +158,11 @@ for epoch in range(num_epochs):
     scheduler_G.step()
 
     # save best model
-    if (epoch + 1) % 5 == 0:
-        torch.save(generator.state_dict(), f"../models/unet_model.pth")
+    if avg_g_loss < min(g_losses):
+        torch.save(generator.state_dict(), f"../models/unet_model_mulan.pth")
+
+    g_losses.append(avg_g_loss)
+    d_losses.append(avg_d_loss)
 
     # --- Validation plotting code ---
     import matplotlib.pyplot as plt
