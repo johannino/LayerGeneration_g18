@@ -5,9 +5,14 @@ import torchvision.transforms.functional as TF
 from NextLayerPred import MultiLayerPredictor
 from torch.utils.data import DataLoader
 from CharacterLoader import CharacterLayerLoader
+from MulanDataset import MulanLayerDataset
 from diffusers import UNet2DModel
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import random
+import os
+import shutil
+from pytorch_fid import fid_score
 
 def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
     """
@@ -26,7 +31,7 @@ def evaluate_model(model, dataloader, model_name, num_timing_runs=100):
     model.eval()
     
     # Get a batch of data
-    layer_tensor, _ = next(iter(dataloader))
+    layer_tensor,_ = next(iter(dataloader))
     layer_tensor = layer_tensor.to(device)
 
     # Split layers
@@ -146,7 +151,7 @@ def print_evaluation_results(results):
     print(f"Predictions per second: {pps:.2f}")
     print()
 
-def plot_generated_samples(model, dataloader, model_name, num_samples=5):
+def plot_generated_samples(model, dataloader, model_name, num_samples=250):
     """
     Plot generated samples from the model.
     
@@ -155,11 +160,14 @@ def plot_generated_samples(model, dataloader, model_name, num_samples=5):
         dataloader: DataLoader containing the evaluation data
         num_samples: Number of samples to plot
     """
+    print("Plotting samples for", model_name)
+    os.makedirs(f'../figures/generated_samples/{model_name}', exist_ok=True)
+    os.makedirs(f'../figures/generated_samples/{model_name}/final_layer', exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     
     with torch.no_grad():
-        for i, (layer_tensor, _) in enumerate(dataloader):
+        for i, (layer_tensor,_) in enumerate(dataloader):
             if i >= num_samples:
                 break
             
@@ -182,10 +190,17 @@ def plot_generated_samples(model, dataloader, model_name, num_samples=5):
                     )
                     pred_layers = [layer1.squeeze(0).cpu()] + [layer.squeeze(0).cpu() for layer in pred_layers]
                 case "UNet":
-                    pred_layers = [layer1.squeeze(0).cpu()]  
+                    
+                    #initial_noise = torch.randn(1, 3, 256, 256, device=device)
+
+                    #current_layer = model(
+                    #    sample=initial_noise,
+                    #    timestep=torch.zeros(1, device=device, dtype=torch.long),
+                    #).sample
+                    pred_layers = [layer1.squeeze(0).cpu()]
 
                     for _ in range(1, 6):
-                        current_layer = pred_layers[-1].unsqueeze(0).to(device) + torch.randn_like(current_layer) * 0.1
+                        current_layer = pred_layers[-1].unsqueeze(0).to(device)
                         with torch.no_grad():
                             predicted_residual = model(
                                 sample=current_layer,
@@ -197,8 +212,8 @@ def plot_generated_samples(model, dataloader, model_name, num_samples=5):
                             
                             current_layer = next_layer
             
-            fig, axs = plt.subplots(1, 6, figsize=(15, 5))
-            fig.suptitle(f"Generated Layers", fontsize=32)
+            fig, axs = plt.subplots(1, 6, figsize=(20, 5))
+            fig.suptitle(f"Generated Layers {model_name}", fontsize=32)
             for k, layer in enumerate(pred_layers):
                 generated = layer.permute(1, 2, 0).clamp(0, 1)
                 if k == 0:
@@ -209,7 +224,55 @@ def plot_generated_samples(model, dataloader, model_name, num_samples=5):
                 axs[k].axis('off')
                 axs[k].set_title(f"{title}", fontsize=16)
                 if k == len(pred_layers) - 1:
-                    plt.savefig(f'../figures/generated_samples/{model_name}/generated_layers_{model_name}_{i+1}.png')
+                    plt.savefig(f'../figures/generated_samples/{model_name}/generated_layers_{model_name}_{i}.png')
+                    plt.imsave(f'../figures/generated_samples/{model_name}/final_layer/final_layer_only_{model_name}_{i}.png', generated.cpu().numpy())
+                    plt.close()
+
+def calculate_fid(real_dir = '../data/face', gen_dir_last = '../figures/generated_samples/', model_name=None, keep_samples=10):
+    """
+    Calculate FID score between real and generated images, keeping only specified number of samples.
+    
+    Args:
+        real_dir: Directory containing real images
+        gen_dir_last: Base directory for generated images
+        model_name: Name of the model ('ViT' or 'UNet')
+        keep_samples: Number of samples to keep (default: 10)
+    """
+    # Setup directories
+    gen_dir_not_last = gen_dir_last + model_name
+    gen_dir_last = gen_dir_last + model_name + '/final_layer'
+    
+    # Get list of all generated images from final layer
+    generated_files = [f for f in os.listdir(gen_dir_last) if f.endswith('.png')]
+    generated_files_not_last = [f for f in os.listdir(gen_dir_not_last) if f.endswith('.png') and not os.path.isdir(os.path.join(gen_dir_not_last, f))]
+    
+    # Calculate FID using remaining files
+    fid = fid_score.calculate_fid_given_paths(
+        [real_dir, gen_dir_last],
+        batch_size=50,
+        device=str(device),
+        dims=2048,
+    )
+
+    # Select random samples to keep
+    files_to_keep = set(random.sample(generated_files, min(keep_samples, len(generated_files))))
+    files_to_keep_not_last = set(random.sample(generated_files_not_last, min(keep_samples, len(generated_files_not_last))))
+    
+    # Delete files in main directory (excluding final_layer directory)
+    for file in generated_files_not_last:
+        file_path = os.path.join(gen_dir_not_last, file)
+        if os.path.isfile(file_path) and file not in files_to_keep_not_last:
+            os.remove(file_path)
+    
+    # Delete files in final_layer directory
+    for file in generated_files:
+        if file not in files_to_keep:
+            os.remove(os.path.join(gen_dir_last, file))
+    
+    print(f"\nFID: {fid:.2f} for {model_name} (kept {len(files_to_keep)} samples)")
+    
+    return fid
+
 
 if __name__ == "__main__":
     # Set up device
@@ -218,6 +281,7 @@ if __name__ == "__main__":
     # Data loading
     data_folder = "../data"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(256, 256))
+    #dataset = MulanLayerDataset('../MULAN_data')
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True, pin_memory=True)
 
     # Load and evaluate ViT model
@@ -236,23 +300,27 @@ if __name__ == "__main__":
     print_evaluation_results(vit_results)
 
     print("Evaluating Unet model...")
+
     unet_model = UNet2DModel(
         sample_size=256,
         in_channels=3,
         out_channels=3,
-        layers_per_block=1,
-        block_out_channels=(32, 64, 64, 128),
+        layers_per_block=2,
+        block_out_channels= (64, 128, 256, 256),
         down_block_types=("DownBlock2D", "DownBlock2D", "AttnDownBlock2D", "DownBlock2D"),
         up_block_types=("UpBlock2D", "AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
+        mid_block_type="AttnMidBlock2D",
     ).to(device)
 
     unet_model.load_state_dict(torch.load('../models/unet_model.pth'))
     unet_results = evaluate_model(unet_model, dataloader, "UNet")
     print_evaluation_results(unet_results)
 
-    samples = 10
-    plot_generated_samples(unet_model, dataloader, "UNet",num_samples=10)
-    plot_generated_samples(vit_model, dataloader, "ViT",num_samples=10)
+    samples = 2000
+    plot_generated_samples(unet_model, dataloader, "UNet",num_samples=samples)
+    plot_generated_samples(vit_model, dataloader, "ViT",num_samples=samples)
+    calculate_fid(model_name='ViT')
+    calculate_fid(model_name='UNet')
 
     print("\nModel Comparison:")
     print(f"ViT vs UNet:")

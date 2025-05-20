@@ -166,9 +166,7 @@ class MultiLayerPredictor(nn.Module):
 # Driver Code
 # ---------------------------
 if __name__ == "__main__":
-    # 1. Create the dataset and dataloader.
-    # Note: Maybe we can normalize images in CharacterLayerLoader.
-    # Also, we are starting from shirt layer and not base (need to check datalaoder)
+    # 1. Setup
     batch_size = 16
     data_folder = "../data/"
     dataset = CharacterLayerLoader(data_folder=data_folder, resolution=(256, 256))
@@ -177,8 +175,7 @@ if __name__ == "__main__":
 
     print(f"Number of batches: {len(dataloader)}")
 
-    # 2. Instantiate the multi-layer predictor.
-    # We'll use the same configuration for both predictor modules.
+    # 2. Initialize models
     model = MultiLayerPredictor(
         image_size=256,
         patch_size=16,
@@ -193,191 +190,29 @@ if __name__ == "__main__":
         in_channels=3
     ).to(device)
 
-    # 3. Define loss and optimizer.
-    # We use MSE loss plus an L1 penalty on the residuals to encourage minimal changes.
-    criterion_mse = nn.MSELoss()
-    criterion_l1 = nn.L1Loss()
-    criterion_bce = nn.BCELoss()
-    criterion_layer = nn.CrossEntropyLoss()
-
-    lambda_adv = 1.0      # Adversarial loss weight
-    lambda_rec = 10.0     # Reconstruction loss weight
-    lambda_fm = 10.0      # Feature matching loss weight
-    lambda_layer = 2.0    # Layer classification loss weight
-    lambda_tv = 1        # Total variation loss weight
-
-    optimizer_G= optim.Adam(model.parameters(), lr=1e-4)
+    # 3. Setup optimizers
+    optimizer_G = optim.Adam(model.parameters(), lr=1e-4)
     optimizer_D = optim.Adam(discriminator.parameters(), lr=1e-4)
     scheduler_G = optim.lr_scheduler.CosineAnnealingLR(optimizer_G, T_max=200)
-    residual_reg_weight = 0.1  # Weight for residual regularization.
-    adversarial_weight = 0.5
 
-    real_label, fake_label = 1.0, 0.0
-    # 4. Training loop.
-    # We assume the dataset provides a tensor of shape [batch, num_layers, 3, 100, 100].
-    # For multi-layer prediction, we use:
-    #   - layer1 as input,
-    #   - layer2 as the target for predictor2,
-    #   - layer3 as the target for predictor3.
-    num_epochs = 30
-    model.train()
-    discriminator.train()
+    # 4. Import and use GAN training function
+    from GAN_train import train_gan
 
-    for epoch in range(num_epochs):
-        running_g_loss = 0.0
-        running_d_loss = 0.0
-        for batch in dataloader:
-            # layer_tensor shape: [batch_size, 5, 3, 100, 100] (if 5 layers per character)
-            layer_tensor, _ = batch
-            layer_tensor = layer_tensor.to(device)
-            layer1 = layer_tensor[:, 0]   # Base layer.
-
-            gt_layers = [layer_tensor[:, i] for i in range(1, 6)]  # Layers 2-6
-
-            real_target = torch.full((batch_size, 1, 3, 3), real_label, device=device)
-            fake_target = torch.full((batch_size, 1, 3, 3), fake_label, device=device)
-            layer_labels = [torch.full((batch_size,), i, dtype=torch.long, device=device) for i in range(5)]
-
-            # 4.1 Train the discriminator.
-            d_real_loss = 0
-            d_layer_loss_real = 0
-            optimizer_D.zero_grad()
-            
-            pred_layers = model(
-                layer1=layer1, 
-                gt_layer2=layer_tensor[:, 1],
-                gt_layer3=layer_tensor[:, 2],
-                gt_layer4=layer_tensor[:, 3], 
-                gt_layer5=layer_tensor[:, 4],
-                teacher_forcing=True)
-
-            d_real_loss = 0
-            d_layer_loss_real = 0
-
-            # Train with real samples
-            for i, (gt_layer, layer_label) in enumerate(zip(gt_layers, layer_labels)):
-                condition = layer1 if i == 0 else gt_layers[i-1]
-                
-                real_validity, real_layer_pred, _ = discriminator(gt_layer, condition)
-                d_real_loss += criterion_bce(real_validity, real_target)
-                d_layer_loss_real += criterion_layer(real_layer_pred.view(batch_size, -1), layer_label)
-            
-            # Train with fake samples
-            d_fake_loss = 0
-            for i, pred_layer in enumerate(pred_layers):
-                condition = layer1 if i == 0 else gt_layers[i-1]
-                fake_validity, _, _ = discriminator(pred_layer.detach(), condition)
-                d_fake_loss += criterion_bce(fake_validity, fake_target)
-            
-            # Total discriminator loss
-            d_loss = (d_real_loss + d_fake_loss) / len(gt_layers) + d_layer_loss_real / len(gt_layers)
-            d_loss.backward()
-            optimizer_D.step()
-
-            # 4.2 Train the generator.
-            optimizer_G.zero_grad()
-            # Use teacher forcing for the second stage.
-            pred_layers= model(
-                layer1=layer1, 
-                gt_layer2=layer_tensor[:, 1],
-                gt_layer3=layer_tensor[:, 2],
-                gt_layer4=layer_tensor[:, 3], 
-                gt_layer5=layer_tensor[:, 4],
-                teacher_forcing=True
-                )
-            
-            g_loss = 0
-            fm_loss = 0
-            g_rec_loss = 0
-            g_layer_loss = 0
-            
-            for i, (pred_layer, gt_layer, layer_label) in enumerate(zip(pred_layers, gt_layers, layer_labels)):
-                condition = layer1 if i == 0 else gt_layers[i-1]
-                
-                # Adversarial loss
-                fake_validity, fake_layer_pred, fake_features = discriminator(pred_layer, condition)
-                g_adversarial = criterion_bce(fake_validity, real_target)
-                
-                # Layer classification loss (generator should produce layers that match expected layer type)
-                g_layer_loss += criterion_layer(fake_layer_pred.view(batch_size, -1), layer_label)
-                
-                # Feature matching loss
-                _, _, real_features = discriminator(gt_layer, condition)
-                fm_loss += criterion_l1(fake_features, real_features.detach())
-                
-                # Reconstruction loss
-                g_rec_loss += criterion_mse(pred_layer, gt_layer)
-                g_tv_loss = total_variation_loss(pred_layer)
-
-                # color_histogram_loss
-                g_rec_loss += color_histogram_loss(pred_layer, gt_layer)
-                
-                # Add L1 loss to enforce sparsity
-                prev_layer = layer1 if i == 0 else gt_layers[i-1]
-                g_rec_loss += 0.1 * criterion_l1(pred_layer - prev_layer, torch.zeros_like(pred_layer))
-                
-            # Combine all losses
-            g_loss = (lambda_adv * g_adversarial + 
-                      lambda_rec * g_rec_loss / len(gt_layers) + 
-                      lambda_fm * fm_loss / len(gt_layers) +
-                      lambda_layer * g_layer_loss / len(gt_layers) + 
-                      lambda_tv * g_tv_loss / len(gt_layers))
-            
-            g_loss.backward()
-            optimizer_G.step()
-            
-            running_g_loss += g_loss.item()
-            running_d_loss += d_loss.item()
+    train_gan(
+        generator=model,
+        discriminator=discriminator,
+        dataloader=dataloader,
+        device=device,
+        num_epochs=61,
+        lambda_adv=1.0,
+        lambda_rec=10.0,
+        lambda_fm=10.0,
+        lambda_layer=2.0,
+        lambda_tv=1,
+        residual_reg_weight=0.1,
+        optimizer_G=optimizer_G,
+        optimizer_D=optimizer_D,
+        scheduler_G=scheduler_G,
+        model_save_path="../models/vit_model.pth"
+    )
         
-        avg_g_loss = running_g_loss / len(dataloader)
-        avg_d_loss = running_d_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{num_epochs}] - G Loss: {avg_g_loss:.4f}, D Loss: {avg_d_loss:.4f}")
-        scheduler_G.step()
-        
-        # Save model checkpoints
-        if (epoch + 1) % 5 == 0:
-            torch.save(model.state_dict(), f"../models/vit_model.pth")
-        
-
-    # 5. Evaluation and save predictions.
-    model.eval()
-    with torch.no_grad():
-        for batch in dataloader:
-            layer_tensor, _ = batch
-            layer_tensor = layer_tensor.to(device)
-            layer1 = layer_tensor[:, 0]
-            gt_layer2 = layer_tensor[:, 1]
-            gt_layer3 = layer_tensor[:, 2]
-            gt_layer4 = layer_tensor[:, 3]
-            gt_layer5 = layer_tensor[:, 4]
-            gt_layer6 = layer_tensor[:, 5]
-            
-            # During evaluation, you can use teacher forcing or sequential prediction.
-            # Here, we use teacher forcing for predictor3.
-            pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = model(
-                layer1=layer1, 
-                gt_layer2=gt_layer2, 
-                gt_layer3=gt_layer3,
-                gt_layer4=gt_layer4,
-                gt_layer5=gt_layer5,
-                teacher_forcing=False)
-            
-            def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
-            
-            num_layers = 6
-            fig, axs = plt.subplots(1, num_layers, figsize=(15, 5))
-
-            pred_layers = [pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6]
-            fig.suptitle("Generated Layers for ViT-model", fontsize=32)
-            axs[0].imshow(to_np(layer1))
-            axs[0].axis('off')
-            axs[0].set_title(f"Layer 0")
-            for i, layer in enumerate(pred_layers):
-                img = to_np(layer)
-                axs[i+1].imshow(img)
-                axs[i+1].axis('off')
-                axs[i+1].set_title(f"Layer {i+1}")
-
-            plt.tight_layout()
-            plt.savefig('../figures/ViT_generated_layers.png')
-            break
