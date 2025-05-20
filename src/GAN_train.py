@@ -103,12 +103,13 @@ def train_gan(
                     running_d_loss += d_loss.item()
                 
             else:
-                layer1 = all_layers[:, 0]   # Base layer.
+                layer1 = all_layers[:, 0]   # Base layer
                 gt_layers = [all_layers[:, i] for i in range(1, 6)]  # Layers 2-6
-
+                
                 # --- Train discriminator ---
                 optimizer_D.zero_grad()
-                layer_labels = [torch.full((batch_size,), i, dtype=torch.long, device=device) for i in range(5)]
+                d_loss = 0
+                d_layer_loss = 0
 
                 pred_layers = generator(
                     layer1=layer1, 
@@ -119,36 +120,30 @@ def train_gan(
                     teacher_forcing=True
                 )
 
-                d_real_loss = 0
-                d_layer_loss_real = 0
-                d_fake_loss = 0
-
-                # Train with real samples
-                for i, (gt_layer, layer_label) in enumerate(zip(gt_layers, layer_labels)):
+                # Train with real and fake samples for each layer
+                for i, (pred_layer, gt_layer, layer_label) in enumerate(zip(pred_layers, gt_layers, layer_labels)):
                     condition = layer1 if i == 0 else gt_layers[i-1]
                     
+                    # Real samples
                     real_validity, real_layer_pred, real_features = discriminator(gt_layer, condition)
                     d_real = real_validity.mean()
-                    d_real_loss -= d_real
-                    d_layer_loss_real += criterion_layer(real_layer_pred.view(batch_size, -1), layer_label)
-                
-                # Train with fake samples
-                for i, pred_layer in enumerate(pred_layers):
-                    condition = layer1 if i == 0 else gt_layers[i-1]
+                    
+                    # Fake samples
                     fake_validity, _, _ = discriminator(pred_layer.detach(), condition)
                     d_fake = fake_validity.mean()
-                    d_fake_loss += d_fake
+                    
+                    # Layer classification loss
+                    d_layer_loss += criterion_layer(real_layer_pred.view(batch_size, -1), layer_label)
+                    
+                    # Wasserstein loss for this layer
+                    d_loss += (-d_real + d_fake)
 
-                # Total discriminator loss
-                d_loss = (d_real_loss + d_fake_loss) / len(gt_layers)
-                d_loss += lambda_layer * d_layer_loss_real / len(gt_layers)
+                # Average losses over all layers
+                d_loss = d_loss / len(gt_layers)
+                d_loss += lambda_layer * d_layer_loss / len(gt_layers)
                 
                 d_loss.backward()
                 optimizer_D.step()
-
-                # Clamp discriminator weights
-                for p in discriminator.parameters():
-                    p.data.clamp_(-0.01, 0.01)
 
                 # --- Train generator ---
                 optimizer_G.zero_grad()
@@ -161,18 +156,18 @@ def train_gan(
                     teacher_forcing=True
                 )
                 
-                g_loss = 0
-                fm_loss = 0
-                g_rec_loss = 0
+                g_adversarial = 0
                 g_layer_loss = 0
+                g_rec_loss = 0
+                fm_loss = 0
                 g_tv_loss = 0
                 
                 for i, (pred_layer, gt_layer, layer_label) in enumerate(zip(pred_layers, gt_layers, layer_labels)):
                     condition = layer1 if i == 0 else gt_layers[i-1]
                     
-                    # Adversarial loss (matching UNet implementation)
+                    # Adversarial loss
                     fake_validity, fake_layer_pred, fake_features = discriminator(pred_layer, condition)
-                    g_adversarial = -fake_validity.mean()
+                    g_adversarial += -fake_validity.mean()
                     
                     # Layer classification loss
                     g_layer_loss += criterion_layer(fake_layer_pred.view(batch_size, -1), layer_label)
@@ -181,18 +176,21 @@ def train_gan(
                     _, _, real_features = discriminator(gt_layer, condition)
                     fm_loss += criterion_l1(fake_features, real_features.detach())
                     
-                    # Reconstruction loss with residual regularization
+                    # Reconstruction losses
                     g_rec_loss += criterion_mse(pred_layer, gt_layer)
                     g_tv_loss += total_variation_loss(pred_layer)
                     g_rec_loss += color_histogram_loss(pred_layer, gt_layer)
                     
-                    # Residual regularization (sparsity)
+                    # Residual regularization
                     prev_layer = layer1 if i == 0 else gt_layers[i-1]
-                    g_rec_loss += residual_reg_weight * criterion_l1(pred_layer - prev_layer, torch.zeros_like(pred_layer))
+                    g_rec_loss += residual_reg_weight * criterion_l1(
+                        pred_layer - prev_layer, 
+                        torch.zeros_like(pred_layer)
+                    )
                 
-                # Combine all losses (exactly as in UNet)
+                # Average and combine all losses
                 g_loss = (
-                    lambda_adv * g_adversarial + 
+                    lambda_adv * g_adversarial / len(gt_layers) + 
                     lambda_rec * g_rec_loss / len(gt_layers) + 
                     lambda_fm * fm_loss / len(gt_layers) +
                     lambda_layer * g_layer_loss / len(gt_layers) + 
@@ -224,50 +222,50 @@ def train_gan(
             if is_unet:
                 plot_unet_validation(generator, dataloader.dataset, device, epoch)
             else:
-                plot_vit_validation(generator, dataloader, device, epoch)
+                plot_vit_validation(generator, dataloader.dataset, device, epoch)
 
 def plot_vit_validation(generator, dataset, device, epoch):
     generator.eval()
     with torch.no_grad():
-        for batch in dataset:
-            layer_tensor, _ = batch
-            layer_tensor = layer_tensor.to(device)
-            layer1 = layer_tensor[:, 0]
-            gt_layer2 = layer_tensor[:, 1]
-            gt_layer3 = layer_tensor[:, 2]
-            gt_layer4 = layer_tensor[:, 3]
-            gt_layer5 = layer_tensor[:, 4]
-            
-            # During evaluation, you can use teacher forcing or sequential prediction.
-            # Here, we use teacher forcing for predictor3.
-            pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = generator(
-                layer1=layer1, 
-                gt_layer2=gt_layer2, 
-                gt_layer3=gt_layer3,
-                gt_layer4=gt_layer4,
-                gt_layer5=gt_layer5,
-                teacher_forcing=False)
-            
-            def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
-            
-            num_layers = 6
-            fig, axs = plt.subplots(1, num_layers, figsize=(15, 5))
+        idx = random.randint(0, len(dataset) - 1)
+        layer_tensor, _ = dataset[idx]  # Now accessing dataset directly
+        layer_tensor = layer_tensor.unsqueeze(0).to(device)  
+        layer1 = layer_tensor[:, 0]
+        gt_layer2 = layer_tensor[:, 1]
+        gt_layer3 = layer_tensor[:, 2]
+        gt_layer4 = layer_tensor[:, 3]
+        gt_layer5 = layer_tensor[:, 4]
+        
+        # During evaluation, you can use teacher forcing or sequential prediction.
+        # Here, we use teacher forcing for predictor3.
+        pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6 = generator(
+            layer1=layer1, 
+            gt_layer2=gt_layer2, 
+            gt_layer3=gt_layer3,
+            gt_layer4=gt_layer4,
+            gt_layer5=gt_layer5,
+            teacher_forcing=False)
+        
+        def to_np(t): return t[0].permute(1, 2, 0).cpu().numpy()
+        
+        num_layers = 6
+        fig, axs = plt.subplots(1, num_layers, figsize=(15, 5))
 
-            pred_layers = [pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6]
-            fig.suptitle("Generated Layers for ViT-model", fontsize=32)
-            axs[0].imshow(to_np(layer1))
-            axs[0].axis('off')
-            axs[0].set_title("Layer 0")
-            for i, layer in enumerate(pred_layers):
-                img = to_np(layer)
-                axs[i+1].imshow(img)
-                axs[i+1].axis('off')
-                axs[i+1].set_title(f"Layer {i+1}")
+        pred_layers = [pred_layer2, pred_layer3, pred_layer4, pred_layer5, pred_layer6]
+        fig.suptitle("Generated Layers for ViT-model", fontsize=32)
+        axs[0].imshow(to_np(layer1))
+        axs[0].axis('off')
+        axs[0].set_title("Layer 0")
+        for i, layer in enumerate(pred_layers):
+            img = to_np(layer)
+            axs[i+1].imshow(img)
+            axs[i+1].axis('off')
+            axs[i+1].set_title(f"Layer {i+1}")
 
-            plt.tight_layout()
-            if epoch % 5 == 0:
-                plt.savefig(f'../figures/ViT_generated_layers_{epoch}.png')
-    plt.close()
+        plt.tight_layout()
+        if epoch % 5 == 0:
+            plt.savefig(f'../figures/ViT_generated_layers_{epoch}.png')
+            plt.close()
     generator.train()
 
 def plot_unet_validation(generator, dataset, device, epoch):

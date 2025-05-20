@@ -203,7 +203,7 @@ if __name__ == "__main__":
         discriminator=discriminator,
         dataloader=dataloader,
         device=device,
-        num_epochs=30,
+        num_epochs=61,
         lambda_adv=1.0,
         lambda_rec=10.0,
         lambda_fm=10.0,
